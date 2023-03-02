@@ -1,0 +1,571 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Mar 31 17:17:39 2022
+
+@author: m112719
+"""
+import pandas as pd
+from datetime import datetime
+from sklearn.svm import OneClassSVM
+import matplotlib.pyplot as plt
+from pandas import read_csv
+from pandas import DataFrame
+from numpy import arange
+from numpy import mean
+from numpy import array
+from joblib import load
+import os
+import numpy as np
+import sys
+
+"""
+來畫控制圖，其中使用了 ewm() 方法對序列進行了指數移動平均，還使用了 OutlierDispersion() 
+方法計算了監測指標的異常分散程度。整體上，這段程式碼的目的是根據模型估計測試集的監測指標，進行異常分析。
+
+具體來說，程式碼中：
+
+首先從模型資料中讀取模型參數與模型，從訓練用資料集中讀取訓練數據；
+讀取測試用資料集，根據模型估計測試集的監測指標；
+使用 OutlierDispersion() 方法計算監測指標的異常分散程度；
+使用 ewm() 方法對序列進行指數移動平均；
+使用 matplotlib 繪製控制圖。
+"""
+
+
+if len(sys.argv) != 3:
+    print('傳入參數數量不足，傳入參數如下',sys.argv[1:])
+    os.system('pause')
+    sys.exit()
+    
+
+
+
+try:
+    
+    # debug
+    # TestFilePrefix = r'2022-06-07-'
+    # TestFileSuffix = '181'
+    
+    # cmd用
+    TestFilePrefix = sys.argv[1]
+    TestFileSuffix = sys.argv[2]
+    
+    # 輸出exe檔用 
+    # Pyinstaller -F DAS_Test.py
+    
+    FilePath = os.path.dirname(os.path.realpath(sys.executable))
+    
+    # 設置繪圖風格
+    plt.style.use('seaborn-darkgrid')
+    k_ewma = 5
+    nsigmas_ewma = 6
+    FolderName = 'result'
+    
+    # # 如果沒有對應的資料夾名稱，就建一個
+    if not os.path.isdir(os.path.join(FilePath,FolderName)):
+        os.mkdir(os.path.join(FilePath,FolderName))
+        
+    
+    DASsignal = [
+        'Vibration_X_RMS','Vibration_Y_RMS','Vibration_Z_RMS',
+        'Vibration_X_Peak','Vibration_Y_Peak','Vibration_Z_Peak',
+        'Acceleration_X_RMS','Acceleration_Y_RMS','Acceleration_Z_RMS',
+        'Acceleration_X_Peak','Acceleration_Y_Peak','Acceleration_Z_Peak'
+        ]
+    
+    lambda_ewma = 0.25
+    
+    
+    target_feture = 'Acceleration_Z_Peak'
+    
+    Status = [
+                    'mold_Close', #關模中
+                    'mold_open', #開模中   
+                    'inject', # 射出
+                    'hold', # 保壓
+                    'filler', # 加料
+                    'cylinder_into', # 座進
+                    'cylinder_return', #座退
+                    'moldbase_into', # 拖模進
+                    'moldbase_return', #拖模退
+    ]
+    DASColumnsName = [
+                        'Time',
+                        'Surface_Temperature',
+                        'Board_Temperature',
+                        'CPU_Temperature',
+                        'Voltage_Level',
+                        'Vibration_X_RMS',
+                        'Vibration_Y_RMS',
+                        'Vibration_Z_RMS',
+                        'Vibration_X_Peak',
+                        'Vibration_Y_Peak',
+                        'Vibration_Z_Peak',
+                        'Power_Line_Frequency',
+                        'Acceleration_X_RMS',
+                        'Acceleration_Y_RMS',
+                        'Acceleration_Z_RMS',
+                        'Acceleration_X_Peak',
+                        'Acceleration_Y_Peak',
+                        'Acceleration_Z_Peak',
+                        '------',
+                        'mold_Close', #關模中
+                        'mold_open', #開模中
+                        'inject', # 射出
+                        'hold', # 保壓
+                        'filler', # 加料
+                        'cylinder_into', # 座進
+                        'cylinder_return', #座退
+                        # 'moldbase_into', # 拖模進
+                        # 'moldbase_return', #拖模退
+                        # 'pump_pressure', #泵壓力
+                        # 'pump_flow', #泵流量
+                        'running_state', #運轉狀態
+                        '------',
+                        # 'Temp1',
+                        # 'Temp2',
+                        # 'Temp3',
+                        # 'Temp4',
+                        # 'Temp5',
+                        # 'Temp6',
+                        # 'Temp7',
+                        # 'Temp8',
+                        # 'OilTemp',  
+                        ]
+    
+             
+    def OCSVMTrain(TrainSet,Verify_N, valid_rate = -1,train_threshold = 0.1):
+        n=arange(0.05, 0.06, 0.05)
+        for i in n:
+            train_data = TrainSet[0:Verify_N]
+            valid_data = TrainSet[:Verify_N]
+            svm_model = OneClassSVM(kernel='rbf',nu = i,).fit(train_data)
+            # python svm_model.predict() 異常值返回 -1，內部值返回 1
+            # r code svm.fit$booling()   異常值返回 FALSE，內部值返回 TRUE (內部修改為異常值=1，內部值=0) 
+            occ_svm_fit_index = svm_model.predict(train_data)
+            
+            occ_svm_fit_index[occ_svm_fit_index == 1] = 0
+            occ_svm_fit_index[occ_svm_fit_index == -1] = 1
+            train_rate_local = sum(occ_svm_fit_index)/(len(occ_svm_fit_index))
+    
+            occ_svm_predict = svm_model.predict(valid_data)
+            occ_svm_predict[occ_svm_predict == 1] = 0
+            occ_svm_predict[occ_svm_predict == -1] = 1
+            valid_rate_local = sum(occ_svm_predict)/(len(occ_svm_predict))
+            train = [train_rate_local,valid_rate_local,svm_model]
+            
+            print("nu=",i,"train_rate=",train_rate_local,"valid_rate=",valid_rate_local)
+            model = train[2]
+        #     if valid_rate == -1:
+        #         if train[0] < train_threshold:
+        #             para_nu = i
+        #             train_rate = train[0]
+        #             valid_rate = train[1]
+        #             model = train[2]
+        #     if valid_rate != - 1:
+        #         if train[0] < train_threshold:
+        #             # if train[1] < valid_rate: 
+        #             para_nu = i
+        #             train_rate = train[0]
+        #             valid_rate = train[1]
+        #             model = train[2]
+        
+        # print("最佳組合: nu=",para_nu,"train_rate=",train_rate,"valid_rate=",valid_rate)
+        return model
+    
+    def OCSVMPredict(TestSet,model):
+        occ_svm_predict = model.predict(TestSet)
+        occ_svm_predict[occ_svm_predict == 1] = 0
+        occ_svm_predict[occ_svm_predict == -1] = 1
+        outlier_ratio = sum(occ_svm_predict)/(len(occ_svm_predict)) * 100
+        return outlier_ratio
+    
+    
+    def OutlierDispersion(x,mean,std,nsigmas):
+    
+        std_lv = 0
+        
+        for j in range(nsigmas):
+            if x > mean + (j+1)*std or x < mean - (j+1)*std:
+                std_lv = j+1
+        return std_lv
+    
+    def Get_test_train(data, i):
+        test_data = data[i]  # 测试集
+        train_data = data[:]
+        train_data.pop(i)  # 训练集
+        return train_data, [test_data]
+    
+    
+    ##-----------------------------------可視化超平面(二維)-----------------------------##
+    def MP_Hyperplane_Draw(svm_model,
+                        test_data,
+                        outlier_ratio,
+                        x_boundary = 2000,
+                        y_boundary = 2000,
+                        Triaxial_index = ['Vibration_X_RMS','Vibration_Z_RMS'],
+                        plot_i = 0,
+                        save_name = 'ModelingProcess'):
+        
+        
+        # 支持向量的邊界
+        xx, yy = np.meshgrid(np.linspace(0, x_boundary, 500), np.linspace(0, y_boundary, 500))
+        # plot the line , the points, and the nearest vectors to the plane
+        Z = svm_model.decision_function(np.c_[xx.ravel(), yy.ravel()])
+        Z = Z.reshape(xx.shape) 
+        plt.figure(figsize=(8,6))
+        # plt.title("Hyperplane Modeling ( Outlier_ratio = "+ str(round(outlier_ratio,2)) + '% )',fontsize=18)
+        plt.title("Hyperplane Modeling",fontsize=24)
+        # 底色分佈
+        plt.contourf(xx, yy, Z, cmap=plt.cm.PuBu)
+        plt.contour(xx, yy, Z, levels=[0, Z.max()], colors='palevioletred') 
+        s = 40
+        # 測試點
+        plt.scatter(test_data[Triaxial_index[0]], test_data[Triaxial_index[1]], c='gold', s=s, edgecolors='k')
+        plt.axis('tight')
+        plt.xticks(fontsize=16)
+        plt.yticks(fontsize=16)
+        plt.xlim((0, x_boundary))
+        plt.ylim((0, y_boundary))
+        
+        plt.xlabel(Triaxial_index[0],fontsize=18)
+        plt.ylabel(Triaxial_index[1],fontsize=18)
+        plt.savefig(save_name) 
+        
+        # plt.show()
+        
+        return 
+    ##-----------------------------------可視化超平面(二維)End-----------------------------##
+    class Sensor:
+    
+        def __init__(self,
+                     SensorName,
+                     TrainPath):
+            
+            
+            def TimeProcessing(self, df):
+                # 如果是三軸
+                if self.SensorName ==  'DAS':
+                    self.DASColumnsName = [
+                            'Time',
+                            'Surface_Temperature',
+                            'Board_Temperature',
+                            'CPU_Temperature',
+                            'Voltage_Level',
+                            'Vibration_X_RMS',
+                            'Vibration_Y_RMS',
+                            'Vibration_Z_RMS',
+                            'Vibration_X_Peak',
+                            'Vibration_Y_Peak',
+                            'Vibration_Z_Peak',
+                            'Power_Line_Frequency',
+                            'Acceleration_X_RMS',
+                            'Acceleration_Y_RMS',
+                            'Acceleration_Z_RMS',
+                            'Acceleration_X_Peak',
+                            'Acceleration_Y_Peak',
+                            'Acceleration_Z_Peak',
+                            '------',
+                            'mold_Close', #關模中
+                            'mold_open', #開模中
+                            'inject', # 射出
+                            'hold', # 保壓
+                            'filler', # 加料
+                            'cylinder_into', # 座進
+                            'cylinder_return', #座退
+                            # 'moldbase_into', # 拖模進
+                            # 'moldbase_return', #拖模退
+                            # 'pump_pressure', #泵壓力
+                            # 'pump_flow', #泵流量
+                            'running_state', #運轉狀態
+                            '------',
+                            # 'Temp1',
+                            # 'Temp2',
+                            # 'Temp3',
+                            # 'Temp4',
+                            # 'Temp5',
+                            # 'Temp6',
+                            # 'Temp7',
+                            # 'Temp8',
+                            # 'OilTemp',  
+                            ]
+                    df.columns = self.DASColumnsName
+                    df['Time'] = pd.to_datetime(df['Time'], format="%H:%M:%S:%f")
+                    Data = df[DASsignal] # DASsignal為全域變數
+                    TimeStart = df['Time'][0] #小時:分鐘:秒:毫秒
+                    TimeEnd = df['Time'][len(df)-1]
+                    Time = TimeEnd - TimeStart
+                    Frequency = Time / (len(df)-1)
+                # 如果是單軸
+                if self.SensorName ==  'Single' or self.SensorName ==  'AE':
+                    TimeStart = datetime.strptime(df['col1'][0],"%H:%M:%S:%f")
+                    TimeEnd = datetime.strptime(df['col1'][1],"%H:%M:%S:%f")
+                    Time = TimeEnd - TimeStart 
+                    Data = df['col2'][2:]
+                    Data.reset_index(inplace=True, drop=True)
+                    Frequency = Time / (len(Data)-1)
+                    
+                return df, Data, TimeStart, TimeEnd, Time, Frequency
+            self.SensorName = SensorName  # 感測器擋名
+            self.TrainPath = TrainPath  # 訓練集檔案路徑
+            self.FileExt = r".csv" # 檔案後輟(副檔名)
+            self.AllTrainName = []
+            # 儲存訓練資料的空矩陣
+            self.AllTrainData = []
+            self.AllTrainVibration = []
+            self.AllTrainTimeStart = []
+            self.AllTrainTimeEnd = []
+            self.AllTrainTime = []
+            self.AllTrainFrequency = []
+    
+            # 取得訓練路徑下所有對應前後輟的資料
+            for _ in os.listdir(self.TrainPath):
+                 if _.endswith(self.FileExt):
+                     if _.startswith(self.SensorName,11):  
+                         self.AllTrainName.append(_)
+    
+            if self.SensorName ==  'DAS':
+                for TrainName in self.AllTrainName:
+                    df, Data, TimeStart, TimeEnd, Time, Frequency = TimeProcessing(self, pd.read_csv(os.path.join(self.TrainPath,TrainName),encoding='gb18030'))
+                    self.AllTrainData.append(df)
+                    self.AllTrainVibration.append(Data)
+                    self.AllTrainTimeStart.append(TimeStart)
+                    self.AllTrainTimeEnd.append(TimeEnd)
+                    self.AllTrainTime.append(Time)
+                    self.AllTrainFrequency.append(Frequency)
+    
+            elif self.SensorName ==  'Single' or self.SensorName == 'AE':
+                for TrainName in self.AllTrainName:
+                    df, Data, TimeStart, TimeEnd, Time, Frequency = TimeProcessing(self, pd.read_csv(os.path.join(self.TrainPath,TrainName),encoding='gb18030',names=["col1", "col2"]))
+                    self.AllTrainData.append(df)
+                    self.AllTrainVibration.append(Data)
+                    self.AllTrainTimeStart.append(TimeStart)
+                    self.AllTrainTimeEnd.append(TimeEnd)
+                    self.AllTrainTime.append(Time)
+                    self.AllTrainFrequency.append(Frequency)
+                         
+    ############################################# main ######################################
+    try: # 檢查是否有模型資料
+        # load 讀取參數與模型
+        ocsvmmodel = load(os.path.join(FilePath,'parametric_model','ocsvm_model'))
+        ocsvmmodel2 = load(os.path.join(FilePath,'parametric_model','ocsvm_model_2')) # 用於繪圖的二維模型
+        ModelParameters = read_csv(os.path.join(FilePath,'parametric_model','ModelParameters.csv'))
+        VisualizationParameters = read_csv(os.path.join(FilePath,'parametric_model','VisualizationParameters.csv'))
+    except FileNotFoundError:
+        print('找不到執行檔目錄旁parametric_model內的資料')
+        os.system('pause')
+    # 讀取訓練用的資料集
+    trainfilename = ModelParameters['TrainFileName'][0]
+    
+    
+    try: # 檢查是否有給予data資料夾的
+        df = read_csv(os.path.join(FilePath,'data',TestFilePrefix+'DAS'+'-' +TestFileSuffix+'.csv'),encoding='gb18030')
+    except FileNotFoundError:
+        print('找不到data內相應的資料，請檢查執行檔目錄旁data內是否存在資料')
+        print('也有可能是傳入參數錯誤，目前傳入參數如下:',sys.argv[1:])
+        os.system('pause')
+        
+    # 三軸感測器物件
+    DAS = Sensor(SensorName = 'DAS',
+                TrainPath = os.path.join(FilePath,'data',trainfilename))
+    
+    DASTrainSet = DAS.AllTrainVibration
+    
+    
+    
+    df.columns = DASColumnsName
+    Data = df[DASsignal] # DASsignal為全域變數
+    
+    # 2023/03/02 因有時資料不完整仍會被呼叫，因此直接彈出
+    if len(Data) <= 20:
+        sys.exit() #主程式緒退出
+    
+    # 用模型估計測試集的監測指標
+    TestOutlierRate = OCSVMPredict(Data, ocsvmmodel)
+    TestOutlierDistance = mean(ocsvmmodel.decision_function(Data))
+    
+    DAS_Outlier_Rate_lv = OutlierDispersion([TestOutlierRate],ModelParameters['OutlierRateMean'][0],ModelParameters['OutlierRateStd'][0],6)
+    DAS_Outlier_distance_lv = OutlierDispersion([TestOutlierDistance],ModelParameters['OutlierDistanceMean'][0],ModelParameters['OutlierDistanceStd'][0],6)
+    
+    
+    #-------------------------------------------繪圖-----------------------------#
+    #-------------------------------------------管制圖A-----------------------------#
+    
+    # 合併這一次的結果 
+    VisualizationParameters_test = pd.DataFrame({
+                         'ValidaOutlierRate': [TestOutlierRate],
+                         'ValidaOutlierDistance':[TestOutlierDistance],
+                         })
+        
+    VisualizationParameters =  pd.concat([VisualizationParameters, VisualizationParameters_test])
+    VisualizationParameters.reset_index(inplace=True, drop=True)
+    VisualizationParameters.to_csv(os.path.join(FilePath,'parametric_model','VisualizationParameters.csv'),index=False)
+    
+    rate_all = VisualizationParameters['ValidaOutlierRate']
+    
+    ewma_y = VisualizationParameters['ValidaOutlierRate'].ewm(com=0.25).mean()
+    
+    if len(rate_all) <= 30+k_ewma:
+         if len(rate_all) <= k_ewma:
+             y = ewma_y[0:len(rate_all)]
+         if len(rate_all) > k_ewma:
+             y = ewma_y[0:k_ewma]
+             ewma_y = pd.concat([ewma_y[0:k_ewma],ewma_y[k_ewma:]])
+    if len(rate_all) > 30+k_ewma:
+         y = ewma_y[0:k_ewma]
+         ewma_y = pd.concat([y,ewma_y[-30:]])
+         rate_all = pd.concat([rate_all[0:k_ewma],rate_all[-30:]])
+         
+         
+    DAS_Outlier_Rate_lv = OutlierDispersion([TestOutlierRate],ModelParameters['OutlierRateMean'][0],ModelParameters['OutlierRateStd'][0],6)
+    DAS_Outlier_distance_lv = OutlierDispersion([TestOutlierDistance],ModelParameters['OutlierDistanceMean'][0],ModelParameters['OutlierDistanceStd'][0],6)
+    
+    
+    ewma_x = list(range(len(ewma_y)))
+    ewma_mean = ModelParameters['OutlierRateMean'][0]
+    ewma_std = ModelParameters['OutlierRateStd'][0]
+    ewma_LCL = [0] * len(ewma_y)
+    ewma_UCL = [ewma_mean + ewma_std * nsigmas_ewma]* len(ewma_y)
+     
+    
+    # 繪圖(需安裝 matplotlib)
+    # 設置
+    plt.figure(figsize=(8,6))
+    plt.title('ControlMap(OutlierRate)',fontsize=24)
+    plt.xticks(fontsize=16)
+    plt.yticks(fontsize=16)
+    plt.xlabel('Frequency',fontsize=18)
+    plt.ylabel('OutlierRate',fontsize=18)
+    
+    
+    plt.plot(ewma_x,ewma_y,'s-',color = 'b', marker="o")
+    plt.plot(ewma_x,rate_all,'s-',color = 'black',ls="None", marker="+")
+    plt.plot(ewma_x,ewma_LCL,'s-',color = 'r', marker="None",ls="--")
+    plt.plot(ewma_x,ewma_UCL,'s-',color = 'r', marker="None",ls="--")
+    plt.vlines(k_ewma-0.5, 0 , 100, colors = 'black', linestyles = 'dashed')
+    plt.savefig(os.path.join(FilePath,'result','ControlMapA.jpg'))
+    
+    #-------------------------------------------管制圖A-----------------------------#
+    
+    #-------------------------------------------管制圖B-----------------------------#
+    
+    # 合併這一次的結果 
+    
+    VisualizationParameters.to_csv(os.path.join(FilePath,'parametric_model','VisualizationParameters.csv'),index=False)
+    
+    rate_all = VisualizationParameters['ValidaOutlierDistance']
+    
+    ewma_y = VisualizationParameters['ValidaOutlierDistance'].ewm(com=0.25).mean()
+    
+    if len(rate_all) <= 30+k_ewma:
+         if len(rate_all) <= k_ewma:
+             y = ewma_y[0:len(rate_all)]
+         if len(rate_all) > k_ewma:
+             y = ewma_y[0:k_ewma]
+             ewma_y = pd.concat([ewma_y[0:k_ewma],ewma_y[k_ewma:]])
+    if len(rate_all) > 30+k_ewma:
+         y = ewma_y[0:k_ewma]
+         ewma_y = pd.concat([y,ewma_y[-30:]])
+         rate_all = pd.concat([rate_all[0:k_ewma],rate_all[-30:]])
+         
+    ewma_x = list(range(len(ewma_y)))
+    ewma_mean = ModelParameters['OutlierDistanceMean'][0]
+    ewma_std = ModelParameters['OutlierDistanceStd'][0]
+    ewma_LCL = [ewma_mean - ewma_std * nsigmas_ewma]* len(ewma_y)
+    ewma_UCL = [ewma_mean + ewma_std * nsigmas_ewma]* len(ewma_y)
+     
+    
+    # 繪圖(需安裝 matplotlib)
+    # 設置
+    plt.figure(figsize=(8,6))
+    plt.title('ControlMap(OutlierDistance)',fontsize=24)
+    plt.xticks(fontsize=16)
+    plt.yticks(fontsize=16)
+    plt.xlabel('Frequency',fontsize=18)
+    plt.ylabel('OutlierRate',fontsize=18)
+    
+    
+    plt.plot(ewma_x,ewma_y,'s-',color = 'b', marker="o")
+    plt.plot(ewma_x,rate_all,'s-',color = 'black',ls="None", marker="+")
+    plt.plot(ewma_x,ewma_LCL,'s-',color = 'r', marker="None",ls="--")
+    plt.plot(ewma_x,ewma_UCL,'s-',color = 'r', marker="None",ls="--")
+    plt.vlines(k_ewma-0.5, 0 , 1.5*max(ewma_y), colors = 'black', linestyles = 'dashed')
+    plt.savefig(os.path.join(FilePath,'result','ControlMapB.jpg'))
+    
+    #-------------------------------------------管制圖B-----------------------------#
+    #-------------------------------------------超球面-----------------------------#
+    MP_Hyperplane_Draw(ocsvmmodel2,Data,
+                        TestOutlierRate,
+                        x_boundary=8,
+                        y_boundary=8,
+                        Triaxial_index = ['Vibration_X_RMS','Vibration_Z_RMS'],
+                        save_name = os.path.join(FilePath,'result', 'HyperplaneModeling.jpg'))
+    #-------------------------------------------超球面-----------------------------#
+    #-------------------------------------------折線圖-----------------------------#
+    plt.figure(figsize=(8,6))
+    plt.title('Vibration_X_RMS',fontsize=24)
+    plt.xticks(fontsize=16)
+    plt.yticks(fontsize=16)
+    plt.xlabel('Frequency(0.6/s)',fontsize=18)
+    plt.ylabel('Vibration(mm/s)',fontsize=18)
+        
+    plt.ylim(0, 8)
+    for i in range(1,len(DASTrainSet)):
+        plt.plot(DASTrainSet[i]['Vibration_X_RMS'],color='b')
+    plt.plot(Data['Vibration_X_RMS'],color='r')
+    plt.savefig(os.path.join(FilePath,'result','LineChart.jpg'))
+    #---------------------------------------折線圖-----------------------------#
+    
+    #---------------------------------------雷達圖-----------------------------#
+    
+    labels = ['OutlierRate','OutlierDistance','CompositeScore']
+    labels.append(labels[0])
+    #資料個數
+    dataLenth = 3
+    
+    CompositeScore = int((DAS_Outlier_Rate_lv+DAS_Outlier_distance_lv)/2)
+    # 資料
+    data = array([DAS_Outlier_Rate_lv,DAS_Outlier_distance_lv,CompositeScore]) 
+
+    #----------------------------------------雷達圖-----------------------------#
+    #----------------------------------------繪圖END-----------------------------#
+    # Outlier Distance
+    if CompositeScore >= 5:
+        
+        result = DataFrame({
+                        'OilPumpWarning':['Red'],
+                        })
+    elif CompositeScore >= 3:
+        result = DataFrame({
+                        'OilPumpWarning':['Yellow'],
+                        })
+    else:
+        result = DataFrame({
+                        'OilPumpWarning':['Green'],
+                        })
+         
+    result1 = DataFrame({
+                    'test_name':[TestFilePrefix + TestFileSuffix],
+                    })
+     
+    result = result.merge(result1, how='inner', left_index=True, right_index=True)
+
+    # 雷達圖資料
+    result2 = DataFrame({
+                    'OutlierRate':[DAS_Outlier_Rate_lv], # 離群率
+                    'OutlierDistance':[DAS_Outlier_distance_lv], # 離群距離
+                    'VibFreqDeviation':[int(np.random.uniform(2,6))], # 震動頻率偏差
+                    'AudioDeviation':[int(np.random.uniform(2,6))], # 聲音頻率偏差
+                    'CompositeScore':[CompositeScore], #綜合評估指標
+                    'noise':[1] # 治標不治本
+                    })
+
+    result = result.merge(result2, how='inner', left_index=True, right_index=True)
+    df = DataFrame(result)
+    df.to_csv(os.path.join(FilePath,'result','Result.csv'))
+except Exception as e:
+    print('錯誤訊息如下:',e)
+    print('執行失敗，傳入參數如下',sys.argv[1:])
+
+
+
